@@ -25,6 +25,21 @@ echo "DISTRIB_SOURCECODE='immortalwrt'" >>package/base-files/files/etc/openwrt_r
 # Add luci-app-amlogic
 # svn co https://github.com/ophub/luci-app-amlogic/trunk/luci-app-amlogic package/luci-app-amlogic
 
+# 添加测速插件
+svn co https://github.com/sirpdboy/netspeedtest.git package/luci-app-netspeedtest
+
+# 添加passwall2
+svn co https://github.com/xiaorouji/openwrt-passwall2.git package/luci-app-passwall2
+
+# 添加分区扩容插件
+svn co https://github.com/sirpdboy/luci-app-partexp.git package/luci-app-partexp
+
+# 修改默认IP
+sed -i 's/192.168.1.1/10.0.0.1/g' package/base-files/files/bin/config_generate
+
+# 修改默认子网掩码
+sed -i 's/255.255.255.0/255.255.252.0/g' package/base-files/files/bin/config_generate
+
 # Apply patch
 # git apply ../config/patches/{0001*,0002*}.patch --directory=feeds/luci
 #
