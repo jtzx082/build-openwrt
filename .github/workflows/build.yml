@@ -1,17 +1,11 @@
-#============================================================================================
-# https://github.com/ophub/amlogic-s9xxx-openwrt
-# Description: Build OpenWrt (Optimized version)
-#============================================================================================
-
-name: 通用设备编译固件优化版
+name: buildopenwrt
 
 on:
-  repository_dispatch:
   workflow_dispatch:
     inputs:
       source_branch:
-        description: "Select the source branch"
-        required: false
+        description: "选择源码分支"
+        required: true
         default: "openwrt-main"
         type: choice
         options:
@@ -21,167 +15,149 @@ on:
           - Lienol-master
 
 env:
+  FEEDS_CONF: config/${{ inputs.source_branch }}/feeds.conf.default
+  CONFIG_FILE: config/${{ inputs.source_branch }}/config
+  DIY_P1_SH: config/${{ inputs.source_branch }}/diy-part1.sh
+  DIY_P2_SH: config/${{ inputs.source_branch }}/diy-part2.sh
   TZ: Asia/Shanghai
-  UPLOAD_BIN_DIR: true
-  UPLOAD_FIRMWARE: true
-  UPLOAD_RELEASE: true
 
 jobs:
   build:
     runs-on: ubuntu-22.04
-    if: ${{ github.event.repository.owner.id == github.event.sender.id }}
-
-    permissions:
-      contents: write
-
+    timeout-minutes: 120  # 添加超时防止卡死
+    
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set environment variables
-        id: setenv
-        run: |
-          echo "FEEDS_CONF=config/${{ inputs.source_branch }}/feeds.conf.default" >> $GITHUB_ENV
-          echo "CONFIG_FILE=config/${{ inputs.source_branch }}/config" >> $GITHUB_ENV
-          echo "DIY_P1_SH=config/${{ inputs.source_branch }}/diy-part1.sh" >> $GITHUB_ENV
-          echo "DIY_P2_SH=config/${{ inputs.source_branch }}/diy-part2.sh" >> $GITHUB_ENV
-
-      - name: Initialization environment
-        id: init
+      - name: 初始化环境
         env:
           DEBIAN_FRONTEND: noninteractive
         run: |
-          sudo timedatectl set-timezone "${TZ}"
-          sudo rm -rf /usr/share/dotnet /etc/apt/sources.list.d /usr/local/lib/android || true
           sudo apt-get -y update
-          sudo apt-get -y purge azure-cli ghc* zulu* llvm* firefox google* dotnet* powershell openjdk* mongodb* moby* || true
-          sudo apt-get -y install $(curl -fsSL https://is.gd/depend_ubuntu2204_openwrt)
-          sudo apt-get -y autoremove --purge
-          sudo apt-get clean
-          sudo mkdir -p /workdir
-          sudo chown $USER:$USER /workdir
-          echo "status=success" >> $GITHUB_OUTPUT
+          # 使用更稳定的依赖列表URL
+          sudo apt-get -y install $(curl -fsSL https://raw.githubusercontent.com/ophub/amlogic-s9xxx-openwrt/main/.github/workflows/scripts/depend-openwrt-ubuntu2204)
+          sudo timedatectl set-timezone "${TZ}"
+          echo "WORKDIR_PATH=/workdir" >> $GITHUB_ENV
 
-      - name: Clone source code [$ {{ inputs.source_branch }} ]
-        id: codes
-        working-directory: /workdir
-        if: ${{ steps.init.outputs.status == 'success' && !cancelled() }}
+      - name: 创建缓存目录
         run: |
-          case "${{ inputs.source_branch }}" in
-            *openwrt*)    REPO_URL="https://github.com/openwrt/openwrt"; REPO_BRANCH="main"; TAGS_NAME="official" ;;
-            *lede*)       REPO_URL="https://github.com/coolsnowwolf/lede"; REPO_BRANCH="master"; TAGS_NAME="lede" ;;
-            *immortalwrt*)REPO_URL="https://github.com/immortalwrt/immortalwrt"; REPO_BRANCH="v24.10.1"; TAGS_NAME="immortalwrt" ;;
-            *Lienol*)     REPO_URL="https://github.com/Lienol/openwrt"; REPO_BRANCH="22.03"; TAGS_NAME="Lienol" ;;
-            *)            echo "Unknown source code repository."; exit 1 ;;
-          esac
-          git clone --single-branch --depth=1 --branch=${REPO_BRANCH} ${REPO_URL} openwrt
-          ln -sf /workdir/openwrt $GITHUB_WORKSPACE/openwrt
-          echo "build_tag=OpenWrt_${TAGS_NAME}_$(date +%Y.%m)" >> $GITHUB_OUTPUT
-          echo "REPO_URL: [ ${REPO_URL} ] REPO_BRANCH: [ ${REPO_BRANCH} ] TAGS_NAME: [ ${TAGS_NAME} ]"
-          df -hT $PWD
-          echo "status=success" >> $GITHUB_OUTPUT
+          sudo mkdir -p ${WORKDIR_PATH}
+          sudo chown -R $USER:$USER ${WORKDIR_PATH}
+          echo "WORKSPACE_PATH=${GITHUB_WORKSPACE}" >> $GITHUB_ENV
 
-      - name: Load custom feeds
-        run: |
-          [[ -f "${FEEDS_CONF}" ]] && cp -f ${FEEDS_CONF} openwrt/feeds.conf.default
-          [[ -f "${DIY_P1_SH}" ]] && chmod +x ${DIY_P1_SH}
-          cd openwrt/
-          [[ -f "${GITHUB_WORKSPACE}/${DIY_P1_SH}" ]] && ${GITHUB_WORKSPACE}/${DIY_P1_SH}
+      - name: 缓存工具链
+        uses: actions/cache@v3
+        id: toolchain-cache
+        with:
+          path: |
+            ${WORKDIR_PATH}/openwrt/dl
+            ${WORKDIR_PATH}/openwrt/staging_dir
+          key: ${{ runner.os }}-toolchain-${{ inputs.source_branch }}-${{ hashFiles('config/${{ inputs.source_branch }}/*') }}
+          restore-keys: |
+            ${{ runner.os }}-toolchain-${{ inputs.source_branch }}-
 
-      - name: Update and install feeds
+      - name: 克隆源码 [${{ inputs.source_branch }}]
+        working-directory: ${WORKDIR_PATH}
         run: |
-          cd openwrt/
-          ./scripts/feeds update -a
-          ./scripts/feeds install -a
+          declare -A repo_map=(
+            ["openwrt-main"]="https://github.com/openwrt/openwrt main official"
+            ["lede-master"]="https://github.com/coolsnowwolf/lede master lede"
+            ["immortalwrt-v24.10.1"]="https://github.com/immortalwrt/immortalwrt v24.10.1 immortalwrt"
+            ["Lienol-master"]="https://github.com/Lienol/openwrt 22.03 Lienol"
+          )
+          
+          read repo_url repo_branch tags_name <<< "${repo_map[${{ inputs.source_branch }}]}"
+          
+          if [ -z "$repo_url" ]; then
+            echo "❌ 未知的源码仓库"
+            exit 1
+          fi
 
-      - name: Load custom configuration
-        run: |
-          [[ -d "files" ]] && mv -f files openwrt/files
-          [[ -e "${CONFIG_FILE}" ]] && cp -f ${CONFIG_FILE} openwrt/.config
-          [[ -f "${DIY_P2_SH}" ]] && chmod +x ${DIY_P2_SH}
-          cd openwrt/
-          [[ -f "${GITHUB_WORKSPACE}/${DIY_P2_SH}" ]] && ${GITHUB_WORKSPACE}/${DIY_P2_SH}
+          git clone --depth=1 --branch=$repo_branch $repo_url openwrt
+          ln -sf ${WORKDIR_PATH}/openwrt ${WORKSPACE_PATH}/openwrt
+          echo "BUILD_TAG=OpenWrt_${tags_name}_$(date +'%Y.%m')" >> $GITHUB_ENV
 
-      - name: Download package
-        id: package
+      - name: 加载自定义配置
         run: |
-          cd openwrt/
+          [ -f "${FEEDS_CONF}" ] && cp -f ${FEEDS_CONF} openwrt/feeds.conf.default
+          
+          if [ -f "${DIY_P1_SH}" ]; then
+            chmod +x ${DIY_P1_SH}
+            cd openwrt/
+            ${GITHUB_WORKSPACE}/${DIY_P1_SH}
+          fi
+
+      - name: 更新软件源
+        working-directory: ./openwrt
+        run: ./scripts/feeds update -a
+
+      - name: 安装软件包
+        working-directory: ./openwrt
+        run: ./scripts/feeds install -a
+
+      - name: 应用配置
+        run: |
+          [ -d "files" ] && mv -f files openwrt/files
+          [ -f "${CONFIG_FILE}" ] && cp -f ${CONFIG_FILE} openwrt/.config
+          
+          if [ -f "${DIY_P2_SH}" ]; then
+            chmod +x ${DIY_P2_SH}
+            cd openwrt/
+            ${GITHUB_WORKSPACE}/${DIY_P2_SH}
+          fi
+
+      - name: 下载依赖
+        working-directory: ./openwrt
+        run: |
           make defconfig
           make download -j$(nproc)
-          find dl -size -1024c -exec rm -f {} +
+          find dl -size -1024c -delete  # 更高效的删除无效文件方式
 
-      - name: Compile the OpenWrt
-        id: compile
-        timeout-minutes: 360
+      - name: 编译固件
+        working-directory: ./openwrt
         run: |
-          cd openwrt
-          echo "::group::Compile"
-          make -j$(nproc) || make -j1 || make -j1 V=s
-          echo "::endgroup::"
-          echo "FILE_DATE=_$(date +%Y%m%d%H%M)" >> $GITHUB_ENV
-          grep '^CONFIG_TARGET.*DEVICE.*=y' .config | sed -r 's/.*DEVICE_(.*)=y/\1/' > DEVICE_NAME
-          [ -s DEVICE_NAME ] && echo "DEVICE_NAME=_$(cat DEVICE_NAME)" >> $GITHUB_ENV
-          echo "status=success" >> $GITHUB_OUTPUT
+          make -j$(($(nproc) + 1)) || make -j1 V=s
+          echo "FILE_DATE=_$(date +'%Y%m%d%H%M')" >> $GITHUB_ENV
+          DEVICE_NAME=$(grep '^CONFIG_TARGET.*DEVICE.*=y' .config | sed -r 's/.*DEVICE_(.*)=y/\1/')
+          [ -n "$DEVICE_NAME" ] && echo "DEVICE_NAME=_$DEVICE_NAME" >> $GITHUB_ENV
 
-      - name: Check space usage
-        if: always()
-        run: df -hT
-
-      - name: Upload bin directory
-        uses: actions/upload-artifact@v4
-        if: steps.compile.outputs.status == 'success' && env.UPLOAD_BIN_DIR == 'true'
-        with:
-          name: OpenWrt_bin${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
-          path: openwrt/bin
-
-      - name: Organize files
+      - name: 整理固件
         id: organize
-        if: env.UPLOAD_FIRMWARE == 'true' && !cancelled()
+        working-directory: ./openwrt/bin/targets
         run: |
-          cd openwrt/bin/targets/*/*
-          rm -rf packages
-          echo "FIRMWARE=$PWD" >> $GITHUB_ENV
+          target_dir=$(find . -mindepth 2 -maxdepth 2 -type d | head -1)
+          rm -rf $target_dir/packages
+          echo "FIRMWARE_PATH=${PWD}/$target_dir" >> $GITHUB_ENV
           echo "status=success" >> $GITHUB_OUTPUT
 
-      - name: Upload firmware directory
+      - name: 上传固件
         uses: actions/upload-artifact@v4
-        if: steps.organize.outputs.status == 'success' && !cancelled()
+        if: steps.organize.outputs.status == 'success'
         with:
           name: OpenWrt_firmware${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
-          path: ${{ env.FIRMWARE }}
+          path: ${{ env.FIRMWARE_PATH }}
 
-      - name: Generate release tag
-        id: tag
-        if: env.UPLOAD_RELEASE == 'true' && !cancelled()
+      - name: 创建发布版本
+        id: release
+        if: success()
         run: |
-          echo "release_tag=$(date +'%Y.%m.%d-%H%M')" >> $GITHUB_OUTPUT
-          cat <<EOF > release.txt
-### OpenWrt Image information
-- Default IP: 192.168.1.1
-- Default username: root
-- Default password: password
-- Default WIFI name: OpenWrt
-- Default WIFI password: none
-### Install to EMMC
-- Login to OpenWrt → System → Amlogic Service → Install OpenWrt
-### OpenWrt Image Verification
-- sha256sum
-EOF
+          tag_name=$(date +"%Y.%m.%d-%H%M")
+          echo "RELEASE_TAG=$tag_name" >> $GITHUB_ENV
           echo "status=success" >> $GITHUB_OUTPUT
 
-      - name: Upload firmware to release
+      - name: 发布固件
         uses: softprops/action-gh-release@v2
-        if: steps.tag.outputs.status == 'success' && !cancelled()
+        if: steps.release.outputs.status == 'success'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tag_name: ${{ steps.tag.outputs.release_tag }}
-          body_path: release.txt
-          files: ${{ env.FIRMWARE }}/*
-
-      - name: Delete workflow runs
-        uses: GitRML/delete-workflow-runs@main
-        with:
-          retain_days: 1
-          keep_minimum_runs: 3
-          token: ${{ secrets.GITHUB_TOKEN }}
+          tag_name: ${{ env.RELEASE_TAG }}
+          files: ${{ env.FIRMWARE_PATH }}/*
+          body: |
+            ### OpenWrt 固件信息
+            - 默认IP: 192.168.1.1
+            - 用户名: root
+            - 密码: password
+            - WIFI名称: OpenWrt
+            - 安装指南: 系统 → Amlogic服务 → 安装OpenWrt
