@@ -3,7 +3,7 @@
 # Description: Build OpenWrt with GN package build fix for immortalwrt
 #============================================================================================
 
-name: openwrtbuild
+name: openwrtbuild优化
 
 on:
   repository_dispatch:
