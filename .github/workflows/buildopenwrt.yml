@@ -17,7 +17,7 @@ on:
         options:
           - openwrt-main
           - lede-master
-          - immortalwrt-v24.10.1
+          - immortalwrt-openwrt-24.10
           - Lienol-master
 
 env:
@@ -79,7 +79,7 @@ jobs:
               TAGS_NAME="lede"
           elif [[ "${{ inputs.source_branch }}" == *"immortalwrt"* ]]; then
               REPO_URL="https://github.com/immortalwrt/immortalwrt"
-              REPO_BRANCH="v24.10.1"
+              REPO_BRANCH="openwrt-24.10"
               TAGS_NAME="immortalwrt"
           elif [[ "${{ inputs.source_branch }}" == *"Lienol"* ]]; then
               REPO_URL="https://github.com/Lienol/openwrt"
@@ -191,7 +191,7 @@ jobs:
           body_path: release.txt
           files: ${{ env.FIRMWARE }}/*
 
-      - name: Delete workflow runs
+      - name: 删除 workflow runs
         uses: GitRML/delete-workflow-runs@main
         with:
           retain_days: 1
