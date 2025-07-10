@@ -3,7 +3,7 @@
 # Description: Build OpenWrt with GN package build fix for immortalwrt
 #============================================================================================
 
-name: openwrtbuild优化
+name: buildopenwrt
 
 on:
   repository_dispatch:
@@ -111,10 +111,10 @@ jobs:
           ${GITHUB_WORKSPACE}/${DIY_P1_SH}
 
       - name: Update feeds
-        run: cd openwrt/ && ./scripts/feeds update -a && ./scripts/feeds install -a -f
+        run: cd openwrt/ && ./scripts/feeds update -a
 
       - name: Install feeds
-        run: cd openwrt/ && ./scripts/feeds install -a -f
+        run: cd openwrt/ && ./scripts/feeds install -a
 
       - name: Load custom configuration
         run: |
